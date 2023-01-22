@@ -25,9 +25,9 @@ contract Election {
 
     mapping(bytes32 => ElectionStruct) public elections;
     address public owner;
-    address public newOwner;
-    mapping(bytes32 => bool) public lock;
-    mapping(string => bytes32) public electionNameToId;
+    address private newOwner;
+    mapping(bytes32 => bool) private lock;
+    mapping(string => bytes32) private electionNameToId;
 
     event LogElectionCreated(address indexed initiator, bytes32 indexed electionId, string name, string description, uint timestamp, uint startTime, uint stopTime, uint voteFee);
     event LogElectionUpdated(address indexed initiator, bytes32 indexed electionId, string name, string description, uint timestamp, uint startTime, uint stopTime, uint voteFee);
@@ -46,20 +46,51 @@ contract Election {
         owner = msg.sender;
     }
 
+    modifier isOwner() {
+        require(owner == msg.sender, "Only the owner can create an election.");
+    _;
+    }
+
+    modifier isValidName(string memory _name) {
+        require(strlen(_name) >= 3 && strlen(_name) <= 50, "Invalid name, it should be between 3 and 50 characters.");
+    _;
+    }
+
+    modifier isValidDescription(string memory _description) {
+        require(strlen(_description) >= 3 && strlen(_description) <= 100, "Invalid description, it should be between 3 and 100 characters.");
+    _;
+    }
+
+    modifier isValidTimeStamp(uint _startTime, uint _stopTime) {
+            //require(_startTime > block.timestamp, "Invalid startTime, it should be greater than current time.");
+            //require(_stopTime > _startTime, "Invalid stopTime, it should be greater than startTime.");    
+        _;
+    }
+
+    modifier isUniqueName(string memory _name) {
+        require(electionNameToId[_name] == bytes32(0), "Election name already exists.");
+    _;
+    }
+
+    modifier isValidElectionId(bytes32 _electionId) {
+            require(elections[_electionId].electionId != bytes32(0), "Invalid election Id");
+        _;
+    }
+
+    // Check course for code formatting
+
     function createElection(
         string memory _name, 
         string memory _description, 
         uint _startTime, 
         uint _stopTime, 
         uint _voteFee)
-        public {
-                require(msg.sender == owner, "Only the owner can create an election.");
-                require(electionNameToId[_name] == bytes32(0), "Election name already exists.");
-                require(strlen(_name) >= 3 && strlen(_name) <= 50, "Invalid name, it should be between 3 and 50 characters.");
-                require(strlen(_description) >= 3 && strlen(_description) <= 100, "Invalid description, it should be between 3 and 100 characters.");
-                //require(_startTime > block.timestamp, "Invalid startTime, it should be greater than current time.");
-                //require(_stopTime > _startTime, "Invalid stopTime, it should be greater than startTime.");
-                require(_voteFee >= 0, "Invalid vote fees, it should be greater than 0.");
+        external 
+                isOwner 
+                isValidName(_name) 
+                isValidDescription(_description)
+                isValidTimeStamp(_startTime, _stopTime)
+                isUniqueName(_name)   {
 
                 bytes32 _electionId = generateId();
 
@@ -85,13 +116,14 @@ contract Election {
         uint _startTime, 
         uint _stopTime,
         uint _voteFee) 
-        public {
-            require(isValidElectionId(_electionId), "Invalid election ID.");
+        external 
+                isValidName(_name) 
+                isValidDescription(_description)
+                isValidTimeStamp(_startTime, _stopTime)
+                isUniqueName(_name) 
+                isValidElectionId(_electionId)
+        {
             require(isAdmin(_electionId), "You are not authorized to update the election details.");
-            require(strlen(_name) >= 3 && strlen(_name) <= 50, "Invalid name, it should be between 3 and 50 characters.");
-            require(strlen(_description) >= 3 && strlen(_description) <= 100, "Invalid description, it should be between 3 and 100 characters.");
-            //require(_startTime > block.timestamp, "Invalid startTime, it should be greater than current time.");
-            //require(_stopTime > _startTime, "Invalid stopTime, it should be greater than startTime.");
 
             ElectionStruct storage e = elections[_electionId];
             delete electionNameToId[e.name];
@@ -106,9 +138,8 @@ contract Election {
 
     function pauseElection
         (bytes32 _electionId) 
-        public {
+        public isValidElectionId(_electionId) {
             require(isAdmin(_electionId), "You are not authorized to pause the election.");
-            require(isValidElectionId(_electionId), "Invalid election Id");
             require(!elections[_electionId].paused, "Election is already paused.");
             elections[_electionId].paused = true;
             emit LogElectionPaused(msg.sender, _electionId, block.timestamp);
@@ -117,29 +148,26 @@ contract Election {
     function 
         resumeElection
         (bytes32 _electionId) 
-        public {
+        external isValidElectionId(_electionId) {
             require(isAdmin(_electionId), "You are not authorized to resume the election.");
-            require(isValidElectionId(_electionId), "Invalid election Id");
             require(elections[_electionId].paused, "Election is not paused.");
             elections[_electionId].paused = false;
             emit LogElectionResumed(msg.sender, _electionId, block.timestamp);
     }
 
-    function addAdmin(bytes32 _electionId, address _admin) public {
+    function addAdmin(bytes32 _electionId, address _admin) external isValidElectionId(_electionId) {
         require(isAdmin(_electionId), "Only the owner or admins can add new admins.");
-        require(isValidElectionId(_electionId), "Invalid election Id");
         elections[_electionId].admins[_admin] = true;
         emit LogAdminCreated(msg.sender, _electionId, _admin, block.timestamp);
     }
 
-    function removeAdmin(bytes32 _electionId, address _admin) public {
+    function removeAdmin(bytes32 _electionId, address _admin) external isValidElectionId(_electionId) {
         require(isAdmin(_electionId), "Only the owner or admins can remove admins.");
-        require(isValidElectionId(_electionId), "Invalid election Id");
         elections[_electionId].admins[_admin] = false;
         emit LogAdminRemoved(msg.sender, _electionId, _admin, block.timestamp);
     }
 
-    function addParty(bytes32 _electionId, string memory _party) public {
+    function addParty(bytes32 _electionId, string memory _party) external isValidElectionId(_electionId) {
         require(isAdmin(_electionId), "Only the owner or party admins can add parties.");
         elections[_electionId].parties.push(_party);
         emit LogPartyCreated(msg.sender, _electionId, _party, block.timestamp);
@@ -148,7 +176,7 @@ contract Election {
 
     // Hard deletion of party might not be current, we just need to disable it
 
-    function removeParty(bytes32 _electionId, string memory _party) public {
+    function removeParty(bytes32 _electionId, string memory _party) external isValidElectionId(_electionId) {
         require(isAdmin(_electionId), "Only the owner or party admins can remove parties.");
         int partyIndex = getPartyIndex(_electionId, _party);
         require(partyIndex != -1, "Party not found.");
@@ -158,6 +186,60 @@ contract Election {
         }
         delete elections[_electionId].parties[elections[_electionId].parties.length - 1];
         emit LogPartyRemoved(msg.sender, _electionId, _party, block.timestamp);
+    }
+
+    function updateWinner(bytes32 _electionId) external isValidElectionId(_electionId) {
+        require(isAdmin(_electionId), "You are not authorized to update the winner.");
+        require(block.timestamp > elections[_electionId].stopTime, "Election is not closed yet.");
+
+        string memory winnerParty;
+        uint maxVotes = 0;
+        for (uint i = 0; i < elections[_electionId].parties.length; i++) {
+            if (elections[_electionId].voteCounts[elections[_electionId].parties[i]] > maxVotes) {
+                maxVotes = elections[_electionId].voteCounts[elections[_electionId].parties[i]];
+                winnerParty = elections[_electionId].parties[i];
+            }
+        }
+
+        elections[_electionId].winnerParty = winnerParty;
+        emit LogWinnerUpdated(msg.sender, _electionId, winnerParty, block.timestamp);
+    }
+
+    function transferOwnership(address _newOwner) external {
+        require(_newOwner == owner, "Cannot transfer ownership to the current owner.");
+        require(msg.sender == owner, "Only the owner can transfer ownership.");
+        require(_newOwner != address(0), "Cannot transfer ownership to address(0)");
+        newOwner = _newOwner;
+        emit LogTransferOwnership(msg.sender, block.timestamp);
+    }
+
+    function acceptOwnership() external {
+        require(msg.sender == newOwner, "Only the new owner can accept the ownership.");
+        owner = newOwner;
+        newOwner = address(0);
+        emit LogAcceptOwnership(msg.sender, block.timestamp);
+    }
+
+   function vote(bytes32 _electionId, string memory _party) public payable isValidElectionId(_electionId) {
+        while(lock[_electionId]) {
+            // wait until the election is unlocked
+        }
+        lock[_electionId] = true;
+
+        require(isPartyExist(_electionId, _party), "Party does not exist.");
+        require(msg.value >= elections[_electionId].voteFee, "Insufficient funds.");
+        require(!elections[_electionId].voters[msg.sender], "You are not a registered voter.");
+        require(!elections[_electionId].voted[msg.sender], "You have already voted.");
+        require(block.timestamp >= elections[_electionId].startTime && block.timestamp <= elections[_electionId].stopTime, "Election is closed.");
+        require(!elections[_electionId].paused, "Election is paused.");
+
+        elections[_electionId].voteCounts[_party] += 1;
+        elections[_electionId].voted[msg.sender] = true;
+        elections[_electionId].voteTimestamps[msg.sender] = block.timestamp;
+
+        emit LogVote(msg.sender, _electionId, _party, block.timestamp);
+
+        lock[_electionId] = false;
     }
 
     function getPartyIndex(bytes32 _electionId, string memory _party) private view returns (int) {
@@ -176,66 +258,6 @@ contract Election {
             }
         }
         return false;
-    }
-
-    function updateWinner(bytes32 _electionId) public {
-        require(isAdmin(_electionId), "You are not authorized to update the winner.");
-        require(isValidElectionId(_electionId), "Invalid election Id");
-        require(block.timestamp > elections[_electionId].stopTime, "Election is not closed yet.");
-
-        string memory winnerParty;
-        uint maxVotes = 0;
-        for (uint i = 0; i < elections[_electionId].parties.length; i++) {
-            if (elections[_electionId].voteCounts[elections[_electionId].parties[i]] > maxVotes) {
-                maxVotes = elections[_electionId].voteCounts[elections[_electionId].parties[i]];
-                winnerParty = elections[_electionId].parties[i];
-            }
-        }
-
-        elections[_electionId].winnerParty = winnerParty;
-        emit LogWinnerUpdated(msg.sender, _electionId, winnerParty, block.timestamp);
-    }
-
-    function transferOwnership(address _newOwner) public {
-        require(_newOwner == owner, "Cannot transfer ownership to the current owner.");
-        require(msg.sender == owner, "Only the owner can transfer ownership.");
-        require(_newOwner != address(0), "Cannot transfer ownership to address(0)");
-        newOwner = _newOwner;
-        emit LogTransferOwnership(msg.sender, block.timestamp);
-    }
-
-    function acceptOwnership() public {
-        require(msg.sender == newOwner, "Only the new owner can accept the ownership.");
-        owner = newOwner;
-        newOwner = address(0);
-        emit LogAcceptOwnership(msg.sender, block.timestamp);
-    }
-
-   function vote(bytes32 _electionId, string memory _party) public payable {
-        while(lock[_electionId]) {
-            // wait until the election is unlocked
-        }
-        lock[_electionId] = true;
-
-        require(isValidElectionId(_electionId), "Invalid election Id");
-        require(isPartyExist(_electionId, _party), "Party does not exist.");
-        require(msg.value >= elections[_electionId].voteFee, "Insufficient funds.");
-        require(!elections[_electionId].voters[msg.sender], "You are not a registered voter.");
-        require(!elections[_electionId].voted[msg.sender], "You have already voted.");
-        require(block.timestamp >= elections[_electionId].startTime && block.timestamp <= elections[_electionId].stopTime, "Election is closed.");
-        require(!elections[_electionId].paused, "Election is paused.");
-
-        elections[_electionId].voteCounts[_party] += 1;
-        elections[_electionId].voted[msg.sender] = true;
-        elections[_electionId].voteTimestamps[msg.sender] = block.timestamp;
-
-        emit LogVote(msg.sender, _electionId, _party, block.timestamp);
-
-        lock[_electionId] = false;
-    }
-
-    function isValidElectionId(bytes32 _electionId) public view returns (bool) {
-        return elections[_electionId].electionId != bytes32(0);
     }
 
     function isAdmin(bytes32 _electionId) private view returns (bool) {

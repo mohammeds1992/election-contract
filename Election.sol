@@ -7,7 +7,8 @@ contract Election {
         NOT_STARTED,
         ACTIVE,
         PAUSED,
-        CLOSED
+        CLOSED,
+        CANCELLED
     }
 
     struct Winner {
@@ -33,6 +34,7 @@ contract Election {
         mapping(address => uint256) voteTimestamps;
         Winner[] winners;
         bool noVoting;
+        bool isCancelled;
     }
 
     mapping(bytes32 => ElectionStruct) public elections;
@@ -68,6 +70,11 @@ contract Election {
         uint256 timestamp
     );
     event LogElectionPaused(
+        address indexed initiator,
+        bytes32 indexed electionId,
+        uint256 timestamp
+    );
+    event LogElectionCancelled(
         address indexed initiator,
         bytes32 indexed electionId,
         uint256 timestamp
@@ -139,34 +146,9 @@ contract Election {
         _;
     }
 
-    modifier validateElectionInputs(
-        string memory _name,
-        string memory _description,
-        uint256 _startTime,
-        uint256 _stopTime,
-        bytes32 _electionId
-    ) {
-        require(
-            strlen(_name) >= 3 && strlen(_name) <= 50,
-            "Invalid name, it should be between 3 and 50 characters."
-        );
-        require(
-            strlen(_description) >= 3 && strlen(_description) <= 100,
-            "Invalid description, it should be between 3 and 100 characters."
-        );
-        require(
-            (electionNameToId[_name] == bytes32(0) ||
-                electionNameToId[_name] == _electionId),
-            "Election name already exists."
-        );
-        //require(_startTime > block.timestamp, "Invalid startTime, it should be greater than current time.");
-        //require(_stopTime > _startTime, "Invalid stopTime, it should be greater than startTime.");
-        _;
-    }
-
     modifier isUniqueName(string memory _name) {
         require(
-            electionNameToId[_name] == bytes32(0),
+            electionNameToId[_name] == bytes32(uint256(0)),
             "Election name already exists."
         );
         _;
@@ -174,7 +156,7 @@ contract Election {
 
     modifier isValidElectionId(bytes32 _electionId) {
         require(
-            elections[_electionId].electionId != bytes32(0),
+            elections[_electionId].electionId != bytes32(uint256(0)),
             "Invalid election Id"
         );
         _;
@@ -182,8 +164,9 @@ contract Election {
 
     modifier requireElectionOpen(bytes32 _electionId) {
         require(
-            status(_electionId) != ElectionStatus.CLOSED,
-            "Election is closed"
+            status(_electionId) != ElectionStatus.CLOSED &&
+                status(_electionId) != ElectionStatus.CANCELLED,
+            "Election is closed or cancelled"
         );
         _;
     }
@@ -216,109 +199,130 @@ contract Election {
     // TODO-2: List elections only which the user is eligible
     // TODO-3: Write Unit test cases for all the functions
     // TODO-4: Multi owner contract - multi should be optional
-    // TODO-5  block.timestamp Alternative
-    // TODO-6: Fix Local variables issue
+    // TODO-5: block.timestamp Alternative
+    // TODO-6: Break ElectionStruct to mulitiple structs to avoid reading performance issues
+    // TODO-7: Avoid multiple election reads in the vote method
 
-    function createElection(
-        string memory _name,
-        string memory _description,
-        uint256 _startTime,
-        uint256 _stopTime,
-        uint256 _voteFee
-    )
+    modifier validateElectionRequest(
+        ElectionRequest memory request,
+        bytes32 _electionId
+    ) {
+        require(
+            strlen(request.name) >= 3 && strlen(request.name) <= 50,
+            "Invalid name, it should be between 3 and 50 characters."
+        );
+        require(
+            strlen(request.description) >= 3 &&
+                strlen(request.description) <= 100,
+            "Invalid description, it should be between 3 and 100 characters."
+        );
+        require(
+            (electionNameToId[request.name] == bytes32(uint256(0)) ||
+                electionNameToId[request.name] == _electionId),
+            "Election name already exists."
+        );
+        require(
+            request.startTime > block.timestamp,
+            "Invalid startTime, it should be greater than current time."
+        );
+        require(
+            request.stopTime > request.startTime,
+            "Invalid stopTime, it should be greater than startTime."
+        );
+        _;
+    }
+
+    struct ElectionRequest {
+        string name;
+        string description;
+        uint256 startTime;
+        uint256 stopTime;
+        uint256 voteFee;
+    }
+
+    function createElection(ElectionRequest memory request)
         external
         isOwner
-        validateElectionInputs(
-            _name,
-            _description,
-            _startTime,
-            _stopTime,
-            bytes32(0)
-        )
+        validateElectionRequest(request, bytes32(uint256(0)))
     {
         bytes32 _electionId = generateId();
 
-        electionNameToId[_name] = _electionId;
+        electionNameToId[request.name] = _electionId;
         ElectionStruct storage e = elections[_electionId];
         e.parties = new string[](0);
-        e.startTime = _startTime;
-        e.stopTime = _stopTime;
+        e.startTime = request.startTime;
+        e.stopTime = request.stopTime;
         e.electionId = _electionId;
         e.paused = true;
-        e.voteFee = _voteFee;
+        e.voteFee = request.voteFee;
         e.createdTime = block.timestamp;
-        e.name = _name;
-        e.description = _description;
+        e.name = request.name;
+        e.description = request.description;
         e.createdBy = msg.sender;
         e.noVoting = false;
+        e.isCancelled = false;
         emit LogElectionCreated(
             msg.sender,
             _electionId,
-            _name,
-            _description,
+            request.name,
+            request.description,
             e.createdTime,
-            _startTime,
-            _stopTime,
-            _voteFee
+            request.startTime,
+            request.stopTime,
+            request.voteFee
         );
     }
 
-    function updateElection(
-        bytes32 _electionId,
-        string memory _name,
-        string memory _description,
-        uint256 _startTime,
-        uint256 _stopTime,
-        uint256 _voteFee
-    )
+    function updateElection(bytes32 _electionId, ElectionRequest memory request)
         external
-        validateElectionInputs(
-            _name,
-            _description,
-            _startTime,
-            _stopTime,
-            _electionId
-        )
         isValidElectionId(_electionId)
+        isAuthorized(_electionId)
         requireElectionOpen(_electionId)
+        validateElectionRequest(request, _electionId)
     {
         require(
             msg.sender == owner || elections[_electionId].admins[msg.sender],
             "You are not authorized to perform this action"
         );
         ElectionStruct storage e = elections[_electionId];
-        delete electionNameToId[e.name];
-        e.name = _name;
-        e.description = _description;
-        e.startTime = _startTime;
-        e.stopTime = _stopTime;
-        e.voteFee = _voteFee;
-        electionNameToId[_name] = _electionId;
-        // TODO: Need to uncomment this after solving the local variables issue
-        /*emit LogElectionUpdated(
+
+        if (keccak256(bytes(e.name)) != keccak256(bytes(request.name))) {
+            delete electionNameToId[e.name];
+            electionNameToId[request.name] = _electionId;
+        }
+        e.name = request.name;
+        e.description = request.description;
+        e.startTime = request.startTime;
+        e.stopTime = request.stopTime;
+        e.voteFee = request.voteFee;
+        electionNameToId[request.name] = _electionId;
+        emit LogElectionUpdated(
             msg.sender,
             _electionId,
-            _name,
-            _description,
+            request.name,
+            request.description,
             block.timestamp,
-            _startTime,
-            _stopTime,
-            _voteFee
-        );*/
+            request.startTime,
+            request.stopTime,
+            request.voteFee
+        );
     }
 
     function status(bytes32 _electionId) public view returns (ElectionStatus) {
-        if (block.timestamp < elections[_electionId].startTime) {
+        uint256 currentTime = block.timestamp;
+        if (elections[_electionId].isCancelled) {
+            return ElectionStatus.CANCELLED;
+        } else if (currentTime < elections[_electionId].startTime) {
             return ElectionStatus.NOT_STARTED;
         } else if (
-            block.timestamp >= elections[_electionId].startTime &&
-            block.timestamp < elections[_electionId].stopTime &&
+            currentTime >= elections[_electionId].startTime &&
+            currentTime < elections[_electionId].stopTime &&
             !elections[_electionId].paused
         ) {
             return ElectionStatus.ACTIVE;
         } else if (
-            block.timestamp >= elections[_electionId].startTime &&
-            block.timestamp < elections[_electionId].stopTime &&
+            currentTime >= elections[_electionId].startTime &&
+            currentTime < elections[_electionId].stopTime &&
             elections[_electionId].paused
         ) {
             return ElectionStatus.PAUSED;
@@ -336,6 +340,16 @@ contract Election {
         delete electionNameToId[e.name];
         delete elections[_electionId];
         emit LogElectionDeleted(msg.sender, _electionId, block.timestamp);
+    }
+
+    function cancelElection(bytes32 _electionId)
+        public
+        isValidElectionId(_electionId)
+        isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
+    {
+        elections[_electionId].isCancelled = true;
+        emit LogElectionCancelled(msg.sender, _electionId, block.timestamp);
     }
 
     function pauseElection(bytes32 _electionId)
@@ -384,6 +398,11 @@ contract Election {
         isAuthorized(_electionId)
         requireElectionOpen(_electionId)
     {
+        require(
+            strlen(_party) >= 3 && strlen(_party) <= 50,
+            "Invalid party name, it should be between 3 and 50 characters."
+        );
+
         elections[_electionId].parties.push(_party);
         emit LogPartyCreated(msg.sender, _electionId, _party, block.timestamp);
     }
@@ -431,6 +450,8 @@ contract Election {
         if (elections[_electionId].winners.length > 0)
             revert("Winner already declared for this election.");
 
+        uint256 currentTime = block.timestamp;
+
         uint256 maxVotes = 0;
         for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
             if (
@@ -446,7 +467,7 @@ contract Election {
 
         if (maxVotes == 0) {
             elections[_electionId].noVoting = true;
-            emit LogNoVotingCasted(msg.sender, _electionId, block.timestamp);
+            emit LogNoVotingCasted(msg.sender, _electionId, currentTime);
             revert("No votes have been cast in this election, Hence no winner");
         }
 
@@ -472,14 +493,14 @@ contract Election {
                 msg.sender,
                 _electionId,
                 elections[_electionId].winners[0],
-                block.timestamp
+                currentTime
             );
         } else {
             emit LogElectionTied(
                 msg.sender,
                 _electionId,
                 elections[_electionId].winners,
-                block.timestamp
+                currentTime
             );
         }
         return elections[_electionId].winners;
@@ -519,6 +540,11 @@ contract Election {
             // wait until the election is unlocked
         }
         lock[_electionId] = true;
+
+        require(
+            strlen(_party) >= 3 && strlen(_party) <= 50,
+            "Invalid party name, it should be between 3 and 50 characters."
+        );
 
         require(isPartyExist(_electionId, _party), "Party does not exist.");
         require(

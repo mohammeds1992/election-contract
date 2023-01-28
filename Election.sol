@@ -250,6 +250,7 @@ contract Election {
         e.name = _name;
         e.description = _description;
         e.createdBy = msg.sender;
+        e.noVoting = false;
         emit LogElectionCreated(
             msg.sender,
             _electionId,

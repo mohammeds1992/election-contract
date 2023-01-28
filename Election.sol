@@ -10,6 +10,11 @@ contract Election {
         CLOSED
     }
 
+    struct Winner {
+        string party;
+        uint256 votes;
+    }
+
     struct ElectionStruct {
         bytes32 electionId;
         string name;
@@ -26,7 +31,8 @@ contract Election {
         mapping(string => uint256) voteCounts;
         mapping(address => bool) voted;
         mapping(address => uint256) voteTimestamps;
-        string winnerParty;
+        Winner[] winners;
+        bool noVoting;
     }
 
     mapping(bytes32 => ElectionStruct) public elections;
@@ -103,17 +109,21 @@ contract Election {
         string party,
         uint256 timestamp
     );
-    event LogWinnerUpdated(
+    event LogElectionWinnerDeclared(
         address indexed initiator,
         bytes32 indexed electionId,
-        string party,
+        Winner winner,
         uint256 timestamp
     );
-
-    event LogWinnerTie(
+    event LogElectionTied(
         address indexed initiator,
         bytes32 indexed electionId,
-        string[] parties,
+        Winner[] coWinners,
+        uint256 timestamp
+    );
+    event LogNoVotingCasted(
+        address indexed initiator,
+        bytes32 indexed electionId,
         uint256 timestamp
     );
 
@@ -405,13 +415,21 @@ contract Election {
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
         requireElectionClosed(_electionId)
+        returns (Winner[] memory)
     {
         require(
             block.timestamp > elections[_electionId].stopTime,
             "Election is not closed yet."
         );
 
-        string memory winnerParty;
+        require(
+            elections[_electionId].parties.length > 0,
+            "No parties are registered in this election."
+        );
+
+        if (elections[_electionId].winners.length > 0)
+            revert("Winner already declared for this election.");
+
         uint256 maxVotes = 0;
         for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
             if (
@@ -422,17 +440,48 @@ contract Election {
                 maxVotes = elections[_electionId].voteCounts[
                     elections[_electionId].parties[i]
                 ];
-                winnerParty = elections[_electionId].parties[i];
             }
         }
 
-        elections[_electionId].winnerParty = winnerParty;
-        emit LogWinnerUpdated(
-            msg.sender,
-            _electionId,
-            winnerParty,
-            block.timestamp
-        );
+        if (maxVotes == 0) {
+            elections[_electionId].noVoting = true;
+            emit LogNoVotingCasted(msg.sender, _electionId, block.timestamp);
+            revert("No votes have been cast in this election, Hence no winner");
+        }
+
+        elections[_electionId].noVoting = false;
+
+        for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
+            if (
+                elections[_electionId].voteCounts[
+                    elections[_electionId].parties[i]
+                ] == maxVotes
+            ) {
+                maxVotes = elections[_electionId].voteCounts[
+                    elections[_electionId].parties[i]
+                ];
+                elections[_electionId].winners.push(
+                    Winner(elections[_electionId].parties[i], maxVotes)
+                );
+            }
+        }
+
+        if (elections[_electionId].winners.length == 1) {
+            emit LogElectionWinnerDeclared(
+                msg.sender,
+                _electionId,
+                elections[_electionId].winners[0],
+                block.timestamp
+            );
+        } else {
+            emit LogElectionTied(
+                msg.sender,
+                _electionId,
+                elections[_electionId].winners,
+                block.timestamp
+            );
+        }
+        return elections[_electionId].winners;
     }
 
     function transferOwnership(address _newOwner) external {

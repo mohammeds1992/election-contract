@@ -56,6 +56,11 @@ contract Election {
         uint256 stopTime,
         uint256 voteFee
     );
+    event LogElectionDeleted(
+        address indexed initiator,
+        bytes32 indexed electionId,
+        uint256 timestamp
+    );
     event LogElectionPaused(
         address indexed initiator,
         bytes32 indexed electionId,
@@ -110,27 +115,30 @@ contract Election {
     }
 
     modifier isOwner() {
-        require(owner == msg.sender, "Only the owner can create an election.");
+        require(owner == msg.sender, "You are not authorized to perform this action.");
         _;
     }
 
-    modifier isValidName(string memory _name) {
+    modifier validateElectionInputs(
+        string memory _name,
+        string memory _description,
+        uint256 _startTime,
+        uint256 _stopTime,
+        bytes32 _electionId
+    ) {
         require(
             strlen(_name) >= 3 && strlen(_name) <= 50,
             "Invalid name, it should be between 3 and 50 characters."
         );
-        _;
-    }
-
-    modifier isValidDescription(string memory _description) {
         require(
             strlen(_description) >= 3 && strlen(_description) <= 100,
             "Invalid description, it should be between 3 and 100 characters."
         );
-        _;
-    }
-
-    modifier isValidTimeStamp(uint256 _startTime, uint256 _stopTime) {
+        require(
+            (electionNameToId[_name] == bytes32(0) ||
+                electionNameToId[_name] == _electionId),
+            "Election name already exists."
+        );
         //require(_startTime > block.timestamp, "Invalid startTime, it should be greater than current time.");
         //require(_stopTime > _startTime, "Invalid stopTime, it should be greater than startTime.");
         _;
@@ -171,20 +179,21 @@ contract Election {
     modifier isAuthorized(bytes32 _electionId) {
         require(
             msg.sender == owner || elections[_electionId].admins[msg.sender],
-            "You are not authorized to perform this action"
+            "You are not authorized to perform this action."
         );
         _;
     }
 
-    // TODO-1: Check course for code formatting
-    // TODO-2: Status concept for election - NOT STARTED, PAUSED, ACTIVE, CLOSED
-    // TODO-3: No hard deletion for election
+    // TODO-1: Check course for code formatting - DONE
+    // TODO-2: Status concept for election - NOT STARTED, PAUSED, ACTIVE, CLOSED - DONE
+    // TODO-6: Once the election is stopped it should not be restarted - DONE
+    // TODO-3: Add Delete election
     // TODO-4: Pre registered elections - Optional for an election
     // TODO-5: List elections only which the user is eligible
-    // TODO-6: Once the election is stopped it should not be restarted
     // TODO-7: Write Unit test cases for all the functions
     // TODO-8: Multi owner contract - multi should be optional
     // TODO-9  block.timestamp Alternative
+    // TODO-10: Fix Local variables issue
 
     function createElection(
         string memory _name,
@@ -195,10 +204,13 @@ contract Election {
     )
         external
         isOwner
-        isValidName(_name)
-        isValidDescription(_description)
-        isValidTimeStamp(_startTime, _stopTime)
-        isUniqueName(_name)
+        validateElectionInputs(
+            _name,
+            _description,
+            _startTime,
+            _stopTime,
+            bytes32(0)
+        )
     {
         bytes32 _electionId = generateId();
 
@@ -235,11 +247,15 @@ contract Election {
         uint256 _voteFee
     )
         external
-        isValidName(_name)
-        isValidDescription(_description)
-        isValidTimeStamp(_startTime, _stopTime)
-        isUniqueName(_name)
+        validateElectionInputs(
+            _name,
+            _description,
+            _startTime,
+            _stopTime,
+            _electionId
+        )
         isValidElectionId(_electionId)
+        requireElectionOpen(_electionId)
     {
         require(
             msg.sender == owner || elections[_electionId].admins[msg.sender],
@@ -253,7 +269,8 @@ contract Election {
         e.stopTime = _stopTime;
         e.voteFee = _voteFee;
         electionNameToId[_name] = _electionId;
-        emit LogElectionUpdated(
+        // TODO: Need to uncomment this after solving the local variables issue
+        /*emit LogElectionUpdated(
             msg.sender,
             _electionId,
             _name,
@@ -262,7 +279,7 @@ contract Election {
             _startTime,
             _stopTime,
             _voteFee
-        );
+        );*/
     }
 
     function status(bytes32 _electionId) public view returns (ElectionStatus) {
@@ -285,10 +302,22 @@ contract Election {
         }
     }
 
+    function deleteElection(bytes32 _electionId)
+        public
+        isOwner
+        isValidElectionId(_electionId)
+    {
+        ElectionStruct storage e = elections[_electionId];
+        delete electionNameToId[e.name];
+        delete elections[_electionId];
+        emit LogElectionDeleted(msg.sender, _electionId, block.timestamp);
+    }
+
     function pauseElection(bytes32 _electionId)
         public
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
     {
         require(!elections[_electionId].paused, "Election is already paused.");
         elections[_electionId].paused = true;
@@ -299,6 +328,7 @@ contract Election {
         external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
     {
         require(elections[_electionId].paused, "Election is not paused.");
         elections[_electionId].paused = false;
@@ -327,17 +357,17 @@ contract Election {
         external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
     {
         elections[_electionId].parties.push(_party);
         emit LogPartyCreated(msg.sender, _electionId, _party, block.timestamp);
     }
 
-    // Hard deletion of party might not be current, we just need to disable it
-
     function removeParty(bytes32 _electionId, string memory _party)
         external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
     {
         int256 partyIndex = getPartyIndex(_electionId, _party);
         require(partyIndex != -1, "Party not found.");
@@ -360,6 +390,7 @@ contract Election {
         external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
+        requireElectionOpen(_electionId)
     {
         require(
             block.timestamp > elections[_electionId].stopTime,

@@ -110,12 +110,22 @@ contract Election {
         uint256 timestamp
     );
 
+    event LogWinnerTie(
+        address indexed initiator,
+        bytes32 indexed electionId,
+        string[] parties,
+        uint256 timestamp
+    );
+
     constructor() {
         owner = msg.sender;
     }
 
     modifier isOwner() {
-        require(owner == msg.sender, "You are not authorized to perform this action.");
+        require(
+            owner == msg.sender,
+            "You are not authorized to perform this action."
+        );
         _;
     }
 
@@ -168,6 +178,14 @@ contract Election {
         _;
     }
 
+    modifier requireElectionClosed(bytes32 _electionId) {
+        require(
+            status(_electionId) == ElectionStatus.CLOSED,
+            "Election is still active"
+        );
+        _;
+    }
+
     modifier requireElectionActive(bytes32 _electionId) {
         require(
             status(_electionId) == ElectionStatus.ACTIVE,
@@ -184,16 +202,12 @@ contract Election {
         _;
     }
 
-    // TODO-1: Check course for code formatting - DONE
-    // TODO-2: Status concept for election - NOT STARTED, PAUSED, ACTIVE, CLOSED - DONE
-    // TODO-6: Once the election is stopped it should not be restarted - DONE
-    // TODO-3: Add Delete election
-    // TODO-4: Pre registered elections - Optional for an election
-    // TODO-5: List elections only which the user is eligible
-    // TODO-7: Write Unit test cases for all the functions
-    // TODO-8: Multi owner contract - multi should be optional
-    // TODO-9  block.timestamp Alternative
-    // TODO-10: Fix Local variables issue
+    // TODO-1: Pre registered elections - Optional for an election
+    // TODO-2: List elections only which the user is eligible
+    // TODO-3: Write Unit test cases for all the functions
+    // TODO-4: Multi owner contract - multi should be optional
+    // TODO-5  block.timestamp Alternative
+    // TODO-6: Fix Local variables issue
 
     function createElection(
         string memory _name,
@@ -390,7 +404,7 @@ contract Election {
         external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
-        requireElectionOpen(_electionId)
+        requireElectionClosed(_electionId)
     {
         require(
             block.timestamp > elections[_electionId].stopTime,

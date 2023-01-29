@@ -2,7 +2,7 @@
 
 pragma solidity >=0.7.0 <0.9.0;
 
-contract Election {
+contract ElectionContract {
     enum ElectionStatus {
         NOT_STARTED,
         ACTIVE,
@@ -11,12 +11,17 @@ contract Election {
         CANCELLED
     }
 
+    enum PartyStatus {
+        ACTIVE,
+        INACTIVE
+    }
+
     struct Winner {
         string party;
         uint256 votes;
     }
 
-    struct ElectionStruct {
+    struct Election {
         bytes32 electionId;
         string name;
         string description;
@@ -26,18 +31,39 @@ contract Election {
         uint256 voteFee;
         bool paused;
         address createdBy;
-        string[] parties;
-        mapping(address => bool) voters;
-        mapping(address => bool) admins;
-        mapping(string => uint256) voteCounts;
-        mapping(address => bool) voted;
-        mapping(address => uint256) voteTimestamps;
-        Winner[] winners;
         bool noVoting;
         bool isCancelled;
     }
 
-    mapping(bytes32 => ElectionStruct) public elections;
+    struct Party {
+        string name;
+        uint256 createdTime;
+        uint256 voteCount;
+        PartyStatus status;
+    }
+
+    struct Admin {
+        address addr;
+        string name;
+        uint256 createdTime;
+    }
+
+    struct Voter {
+        address addr;
+        bool voted;
+        uint256 voteTimestamp;
+    }
+
+    mapping(bytes32 => Election) public elections;
+    mapping(bytes32 => Party[]) public partyNames;
+
+    mapping(bytes32 => mapping(string => bool)) public parties;
+    // Change name to election admins
+    mapping(bytes32 => mapping(address => bool)) public admins;
+    // Change name to party vote counts
+    mapping(bytes32 => mapping(address => Voter)) public voters;
+    mapping(bytes32 => Winner[]) public winners;
+
     address public owner;
 
     address private newOwner;
@@ -189,7 +215,7 @@ contract Election {
 
     modifier isAuthorized(bytes32 _electionId) {
         require(
-            msg.sender == owner || elections[_electionId].admins[msg.sender],
+            msg.sender == owner || admins[_electionId][msg.sender],
             "You are not authorized to perform this action."
         );
         _;
@@ -202,6 +228,8 @@ contract Election {
     // TODO-5: block.timestamp Alternative
     // TODO-6: Break ElectionStruct to mulitiple structs to avoid reading performance issues
     // TODO-7: Avoid multiple election reads in the vote method
+    // TODO-8: Use Truffle for the test cases
+    // TODO-9: Unique PartyName
 
     modifier validateElectionRequest(
         ElectionRequest memory request,
@@ -248,8 +276,8 @@ contract Election {
         bytes32 _electionId = generateId();
 
         electionNameToId[request.name] = _electionId;
-        ElectionStruct storage e = elections[_electionId];
-        e.parties = new string[](0);
+
+        Election storage e = elections[_electionId];
         e.startTime = request.startTime;
         e.stopTime = request.stopTime;
         e.electionId = _electionId;
@@ -261,6 +289,7 @@ contract Election {
         e.createdBy = msg.sender;
         e.noVoting = false;
         e.isCancelled = false;
+
         emit LogElectionCreated(
             msg.sender,
             _electionId,
@@ -281,10 +310,10 @@ contract Election {
         validateElectionRequest(request, _electionId)
     {
         require(
-            msg.sender == owner || elections[_electionId].admins[msg.sender],
+            msg.sender == owner || admins[_electionId][msg.sender],
             "You are not authorized to perform this action"
         );
-        ElectionStruct storage e = elections[_electionId];
+        Election storage e = elections[_electionId];
 
         if (keccak256(bytes(e.name)) != keccak256(bytes(request.name))) {
             delete electionNameToId[e.name];
@@ -332,18 +361,24 @@ contract Election {
     }
 
     function deleteElection(bytes32 _electionId)
-        public
+        external
         isOwner
         isValidElectionId(_electionId)
     {
-        ElectionStruct storage e = elections[_electionId];
+        Election storage e = elections[_electionId];
         delete electionNameToId[e.name];
         delete elections[_electionId];
+        delete partyNames[_electionId];
+        //delete admins[_electionId];
+        //delete voteCounts[_electionId];
+        //delete voters[_electionId];
+        delete winners[_electionId];
+
         emit LogElectionDeleted(msg.sender, _electionId, block.timestamp);
     }
 
     function cancelElection(bytes32 _electionId)
-        public
+        external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
         requireElectionOpen(_electionId)
@@ -353,7 +388,7 @@ contract Election {
     }
 
     function pauseElection(bytes32 _electionId)
-        public
+        external
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
         requireElectionOpen(_electionId)
@@ -379,7 +414,7 @@ contract Election {
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
     {
-        elections[_electionId].admins[_admin] = true;
+        admins[_electionId][_admin] = true;
         emit LogAdminCreated(msg.sender, _electionId, _admin, block.timestamp);
     }
 
@@ -388,7 +423,7 @@ contract Election {
         isValidElectionId(_electionId)
         isAuthorized(_electionId)
     {
-        elections[_electionId].admins[_admin] = false;
+        admins[_electionId][_admin] = false;
         emit LogAdminRemoved(msg.sender, _electionId, _admin, block.timestamp);
     }
 
@@ -403,7 +438,11 @@ contract Election {
             "Invalid party name, it should be between 3 and 50 characters."
         );
 
-        elections[_electionId].parties.push(_party);
+        partyNames[_electionId].push(
+            Party(_party, block.timestamp, uint256(0), PartyStatus.ACTIVE)
+        );
+
+        parties[_electionId][_party] = true;
         emit LogPartyCreated(msg.sender, _electionId, _party, block.timestamp);
     }
 
@@ -413,20 +452,17 @@ contract Election {
         isAuthorized(_electionId)
         requireElectionOpen(_electionId)
     {
-        int256 partyIndex = getPartyIndex(_electionId, _party);
-        require(partyIndex != -1, "Party not found.");
-        delete elections[_electionId].voteCounts[_party];
-        for (
-            int256 i = partyIndex;
-            i < int256(elections[_electionId].parties.length) - 1;
-            i++
-        ) {
-            elections[_electionId].parties[uint256(i)] = elections[_electionId]
-                .parties[uint256(i) + 1];
+        parties[_electionId][_party] = false;
+
+        for (uint256 i = 0; i < partyNames[_electionId].length; i++) {
+            if (
+                keccak256(bytes(partyNames[_electionId][i].name)) !=
+                keccak256(bytes(_party))
+            ) {
+                partyNames[_electionId][i].status = PartyStatus.INACTIVE;
+            }
         }
-        delete elections[_electionId].parties[
-            elections[_electionId].parties.length - 1
-        ];
+
         emit LogPartyRemoved(msg.sender, _electionId, _party, block.timestamp);
     }
 
@@ -443,25 +479,19 @@ contract Election {
         );
 
         require(
-            elections[_electionId].parties.length > 0,
+            partyNames[_electionId].length > 0,
             "No parties are registered in this election."
         );
 
-        if (elections[_electionId].winners.length > 0)
+        if (winners[_electionId].length > 0)
             revert("Winner already declared for this election.");
 
         uint256 currentTime = block.timestamp;
 
         uint256 maxVotes = 0;
-        for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
-            if (
-                elections[_electionId].voteCounts[
-                    elections[_electionId].parties[i]
-                ] > maxVotes
-            ) {
-                maxVotes = elections[_electionId].voteCounts[
-                    elections[_electionId].parties[i]
-                ];
+        for (uint256 i = 0; i < partyNames[_electionId].length; i++) {
+            if (partyNames[_electionId][i].voteCount > maxVotes) {
+                maxVotes = partyNames[_electionId][i].voteCount;
             }
         }
 
@@ -473,37 +503,31 @@ contract Election {
 
         elections[_electionId].noVoting = false;
 
-        for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
-            if (
-                elections[_electionId].voteCounts[
-                    elections[_electionId].parties[i]
-                ] == maxVotes
-            ) {
-                maxVotes = elections[_electionId].voteCounts[
-                    elections[_electionId].parties[i]
-                ];
-                elections[_electionId].winners.push(
-                    Winner(elections[_electionId].parties[i], maxVotes)
+        for (uint256 i = 0; i < partyNames[_electionId].length; i++) {
+            if (partyNames[_electionId][i].voteCount == maxVotes) {
+                maxVotes = partyNames[_electionId][i].voteCount;
+                winners[_electionId].push(
+                    Winner(partyNames[_electionId][i].name, maxVotes)
                 );
             }
         }
 
-        if (elections[_electionId].winners.length == 1) {
+        if (winners[_electionId].length == 1) {
             emit LogElectionWinnerDeclared(
                 msg.sender,
                 _electionId,
-                elections[_electionId].winners[0],
+                winners[_electionId][0],
                 currentTime
             );
         } else {
             emit LogElectionTied(
                 msg.sender,
                 _electionId,
-                elections[_electionId].winners,
+                winners[_electionId],
                 currentTime
             );
         }
-        return elections[_electionId].winners;
+        return winners[_electionId];
     }
 
     function transferOwnership(address _newOwner) external {
@@ -531,7 +555,7 @@ contract Election {
     }
 
     function vote(bytes32 _electionId, string memory _party)
-        public
+        external
         payable
         isValidElectionId(_electionId)
         requireElectionActive(_electionId)
@@ -551,42 +575,33 @@ contract Election {
             msg.value >= elections[_electionId].voteFee,
             "Insufficient funds."
         );
-        require(
-            !elections[_electionId].voters[msg.sender],
+
+        // TODO: Need to fix this
+        /*require(
+            !voters[_electionId][msg.sender],
             "You are not a registered voter."
-        );
+        );*/
+
         require(
-            !elections[_electionId].voted[msg.sender],
+            !voters[_electionId][msg.sender].voted,
             "You have already voted."
         );
 
-        elections[_electionId].voteCounts[_party] += 1;
-        elections[_electionId].voted[msg.sender] = true;
-        elections[_electionId].voteTimestamps[msg.sender] = block.timestamp;
+        for (uint256 i = 0; i < partyNames[_electionId].length; i++) {
+            if (
+                keccak256(bytes(partyNames[_electionId][i].name)) !=
+                keccak256(bytes(_party))
+            ) {
+                partyNames[_electionId][i].voteCount += 1;
+            }
+        }
+
+        voters[_electionId][msg.sender].voted = true;
+        voters[_electionId][msg.sender].voteTimestamp = block.timestamp;
 
         emit LogVote(msg.sender, _electionId, _party, block.timestamp);
 
         lock[_electionId] = false;
-    }
-
-    function getPartyIndex(bytes32 _electionId, string memory _party)
-        private
-        view
-        returns (int256)
-    {
-        for (
-            int256 i = 0;
-            i < int256(elections[_electionId].parties.length);
-            i++
-        ) {
-            if (
-                keccak256(bytes(elections[_electionId].parties[uint256(i)])) ==
-                keccak256(bytes(_party))
-            ) {
-                return i;
-            }
-        }
-        return -1;
     }
 
     function isPartyExist(bytes32 _electionId, string memory _party)
@@ -594,15 +609,7 @@ contract Election {
         view
         returns (bool)
     {
-        for (uint256 i = 0; i < elections[_electionId].parties.length; i++) {
-            if (
-                keccak256(bytes(elections[_electionId].parties[uint256(i)])) ==
-                keccak256(bytes(_party))
-            ) {
-                return true;
-            }
-        }
-        return false;
+        return parties[_electionId][_party];
     }
 
     function generateId() private view returns (bytes32) {
